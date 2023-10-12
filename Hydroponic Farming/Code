@@ -1,0 +1,270 @@
+/*********************
+
+Automatic IoT-Based Hydroponic-farming system
+  
+ *********************/
+
+ /* Fill-in information from Blynk Device Info here */
+#define BLYNK_TEMPLATE_ID "TMPL62Tjhl-ce"
+#define BLYNK_TEMPLATE_NAME "Quickstart Template"
+#define BLYNK_AUTH_TOKEN "noms08Cg_VyXO6_MA68htdAh1_SGFwxP"
+
+/* Comment this out to disable prints and save space */
+#define BLYNK_PRINT Serial
+
+#include <Wire.h>
+#include <EEPROM.h>
+#include <OneWire.h>
+#include <ArduinoOTA.h>  // For enabling over-the-air updates
+#include <DallasTemperature.h>
+#include <LiquidCrystal_I2C.h>
+#include <Adafruit_ADS1X15.h>
+#include <DFRobot_ESP_EC.h>
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
+
+
+char ssid[] = "XXXX";   // Your WiFi credentials.
+char pass[] = "XXXX"; // Set password to "" for open networks.
+
+
+
+#define ONE_WIRE_BUS 15  // Pin for DS18B20 sensor
+#define TRIGGER_A 2  // Pin for HC-SR04 trigger
+#define ECHO_A 18    // Pin for HC-SR04 echo
+#define RelayIn2 16    // Pin for 2-Channel 5V-Relay IN12
+
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Initilize I2C LCD Screen 16X2
+
+// Initialize for TDS Sensors
+DFRobot_ESP_EC ec;
+Adafruit_ADS1115 ads;
+
+float voltage1;
+float voltage2;
+float TdsSensor1;
+float TdsSensor2;
+
+float CalibratedTds= 230.0; // adjust based on Tds meter to calibrate TDS Sensors
+
+// Initialize DS18B20
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+// Initialize HC-SR04
+long duration_A;
+float Tank_A; 
+
+// Initilize for 2 Channel 5V Relay Module 
+bool Relay = 0;
+
+BLYNK_CONNECTED() {
+  Blynk.syncVirtual(V5);
+}
+
+// Water PPM to Ranges control 2(12V peristatic Pumps) 
+const float LowThreshold = 560.0;   // adjust to your desired lowest TDS value for Selada Planting
+const float HighThreshold = 840.0;   // adjust to your desired highest TDS value for Selada Planting
+
+BlynkTimer timer;
+
+
+void setup()
+{
+  // Debug console
+  Serial.begin(115200);
+
+  EEPROM.begin(32);//needed EEPROM.begin to store calibration k in eeprom
+  ec.begin();
+  ads.setGain(GAIN_TWOTHIRDS);
+  ads.begin();
+  sensors.begin();
+  
+  pinMode(ECHO_A, INPUT); // sets the digital Echo-pin as first sensor HC-RS04 input.
+  pinMode(TRIGGER_A, OUTPUT);  // sets the digital Echo-pin as first sensor HC-RS04 output.
+  pinMode(RelayIn2, OUTPUT); // sets the digital pin RX2 (GPIO 16) as output for relay channel.
+
+  digitalWrite(RelayIn2, HIGH); // Turn off Yellow Pump (Relay Channel 2)
+
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass); // use the above credentials to connect with your Blynk account
+
+ // Ensure WiFi is connected
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+
+   ArduinoOTA.begin();  // Starts OTA
+  }
+
+  lcd.init();
+  lcd.backlight();
+  lcd.print("Smart Hydroponic");
+  lcd.setCursor(0, 1);
+  lcd.print("Initialization..");
+  delay(1000);
+// Display readings on Serial Monitor
+ Serial.println(" : Sensor Readings :");
+// Begin LCD Screen Display
+  lcd.setCursor(0, 0);
+  lcd.print("Sensors Readings");
+  lcd.setCursor(0, 1);
+  lcd.print("Collecting ...");
+  delay(2000);
+  lcd.clear();
+}
+
+
+void TdsSensors(){    
+  voltage1 = ads.readADC_SingleEnded(2) /10;
+  voltage2 = ads.readADC_SingleEnded(3) /10;
+
+  sensors.requestTemperatures();
+  float temperature = sensors.getTempCByIndex(0);  // read your temperature sensor to execute temperature compensation
+  float ecValue1 = ec.readEC(voltage1, temperature); // convert voltage to EC with temperature compensation
+  float ecValue2 = ec.readEC(voltage2, temperature); // convert voltage to EC with temperature compensation
+
+  float TdsSensor1 = ((ecValue1 * 1000) / 2)-CalibratedTds;
+  float TdsSensor2 = ((ecValue2 * 1000) / 2)-CalibratedTds+60;
+
+   // Control the Fertilizer Doses
+ float WaterQuality = (TdsSensor1+TdsSensor2)/2;
+
+if (WaterQuality < LowThreshold) {
+    ON_FertilizerPumps();     // On the Fertilizer Pumps if the condition is true.
+} else if (WaterQuality > HighThreshold) {
+    OFF_FertilizerPumps();    // Off the Fertilizer Pumps only if the first condition is false and the second condition is true.
+}     
+
+
+  // Display readings on Serial Monitor
+     Serial.println(" : Sensor Readings :");
+
+   // Display in Serial Monitor
+      Serial.print("Tds1: ");
+      Serial.print(TdsSensor1);
+      Serial.print("ppm |");
+
+      Serial.print("Tds2: ");
+      Serial.print(TdsSensor2);
+      Serial.print("ppm |");
+
+      Serial.print("WQ: ");
+      Serial.print(WaterQuality);
+      Serial.print("ppm ");
+
+
+   // Display in LCD Screen
+     lcd.setCursor(0, 0);  
+     lcd.print("L:");
+     lcd.print(TdsSensor1);
+     
+     lcd.setCursor(8, 0);  
+     lcd.print("R:");
+     lcd.print(TdsSensor2);
+
+         // Display in BlynkIoT 
+     Blynk.virtualWrite(V0, TdsSensor1);
+     Blynk.virtualWrite(V1, TdsSensor2);
+     Blynk.virtualWrite(V2, WaterQuality);
+
+
+ delay(1000);
+
+  ec.calibration(voltage1, temperature); // calibration process by Serail CMD
+  ec.calibration(voltage2, temperature); // calibration process by Serail CMD
+}
+
+void TemperatureSensor() {
+
+  sensors.requestTemperatures();  // Request temperature reading from DS18B20
+  float Temperature = sensors.getTempCByIndex(0); // Get Water Temperature in Celsius
+
+  // Display in Serial Monitor
+      Serial.print("Temp: ");
+      Serial.print(Temperature);
+      Serial.print("°C | ");
+
+   // Display in LCD Screen
+     lcd.setCursor(0, 1);
+     lcd.print("T:");
+     lcd.print(Temperature);
+
+  // Display in BlynkIoT 
+     Blynk.virtualWrite(V3, Temperature);
+     
+}
+
+
+void FertilizerTanksLevelSensors(){    
+
+// Measure distance using HC-SR04
+ digitalWrite(TRIGGER_A, LOW);
+ delayMicroseconds(2);
+ digitalWrite(TRIGGER_A, HIGH);
+ delayMicroseconds(10);
+
+
+ duration_A = pulseIn(ECHO_A, HIGH);
+ Tank_A = duration_A * 0.034 / 2;
+
+
+      // Display in Serial Monitor
+      Serial.print("Tank A: ");
+      Serial.print(Tank_A);
+      Serial.print("cm | ");
+
+    // Display in LCD Screen
+     lcd.setCursor(8, 1);  
+     lcd.print("A:");
+     lcd.print(Tank_A);
+
+    // Display in BlynkIoT 
+     Blynk.virtualWrite(V4, Tank_A);
+}
+
+void ON_FertilizerPumps() {
+  digitalWrite(RelayIn2, HIGH); // Turn on Yellow Pump (Relay Channel 2)
+  Serial.println(" | ON Pumps");
+  delay(10000);
+  digitalWrite(RelayIn2, LOW); // Turn on Yellow Pump (Relay Channel 2)
+delay(2000);
+
+BLYNK_WRITE(V5) {
+  Relay = param.asInt();
+
+if (Relay == 1) {
+    digitalWrite(RelayIn2, HIGH);
+    }
+  }
+}
+
+void OFF_FertilizerPumps() {
+  digitalWrite(RelayIn2, LOW); // Turn off Yellow Pump (Relay Channel 2)
+  Serial.println(" | OFF Pumps");
+delay(6000);
+
+BLYNK_WRITE(V5) {
+  Relay = param.asInt();
+
+if (Relay == 0) {
+    digitalWrite(RelayIn2, LOW);
+    }
+  }
+}
+
+
+
+void loop(){    
+
+ArduinoOTA.handle();  // Handles a code update request
+
+   TdsSensors();
+   TemperatureSensor();
+   FertilizerTanksLevelSensors();
+
+ delay(2000); // Adjust delay as needed
+ Blynk.run();
+ timer.run();
+
+}
+
